@@ -12,48 +12,23 @@ import re
 import time
 from random import randint
 import SpellCheck
-
-'''
-START_SPELL_CHECK="<span class=\"spell\">Showing results for</span>"
-END_SPELL_CHECK="<br><span class=\"spell_orig\">Search instead for"
-
-HTML_Codes = (
-		("'", '&#39;'),
-		('"', '&quot;'),
-		('>', '&gt;'),
-		('<', '&lt;'),
-		('&', '&amp;'),
-)
-
-def spell_check(s):
-	query = '+'.join(s.split())
-	time.sleep(randint(0,2))
-	request= requests.get("https://www.google.co.uk/search?q=" + query)
-	content = request.text
-	start=content.find(START_SPELL_CHECK)
-
-	if start > -1:
-		start = start + len(START_SPELL_CHECK)
-		end = content.find(END_SPELL_CHECK)
-		search = content[start:end]
-		search = re.sub(r'<[^>]+>', '', search)
-		for code in HTML_Codes:
-			search = search.replace(code[1], code[0])
-		search = search[1:]
-
-	else:
-		search = s
-	return search
-'''
+from sklearn import grid_search
+from sklearn.metrics import mean_squared_error, make_scorer
 
 stop = stopwords.words('english')
 stemmer = SnowballStemmer('english')
 
 def stem_stop(s):
-	return " ".join([stemmer.stem(word) for word in SpellCheck.spell_check(s).split() if word not in stop]) #if word not in stop | spell_check(s)
+	return " ".join([stemmer.stem(word) for word in SpellCheck.spell_check(s.lower()).split() if word not in stop]) #if word not in stop | spell_check(s)
 
 def get_matches(query, info):
 	return sum(int(info.find(word)>=0) for word in query.split())
+
+def fmean_squared_error(ground_truth, predictions):
+    fmean_squared_error_ = mean_squared_error(ground_truth, predictions)**0.5
+    return fmean_squared_error_
+
+RMSE  = make_scorer(fmean_squared_error, greater_is_better=False)
 
 class Regressor:
 
@@ -70,18 +45,15 @@ class Regressor:
 		self.df_test_all = pd.merge(df_test, df_prod_desc, how = 'left', on = 'product_uid')
 
 	def preprocess(self):
-		self.df_train_all['search_term'] = self.df_train_all['search_term'].map(lambda x: stem_stop(x))
-		self.df_train_all['combined_info'] = self.df_train_all['search_term'] + "\t" + self.df_train_all['product_title'] + "\t" + self.df_train_all['product_description']
+		self.df_train_all['combined_info'] = self.df_train_all['search_term'].map(lambda x: stem_stop(x)) + "\t" + self.df_train_all['product_title'].map(lambda x: stem_stop(x)) + "\t" + self.df_train_all['product_description'].map(lambda x: stem_stop(x))
 	 	self.df_train_all['query_length'] = self.df_train_all['search_term'].map(lambda x: len(x.split()))
 	 	self.df_train_all['title_length'] = self.df_train_all['product_title'].map(lambda x: len(x.split()))
 	 	self.df_train_all['description_length'] = self.df_train_all['product_description'].map(lambda x: len(x.split()))
-	 	#self.df_train_all['attribute_length'] = 
 	 	self.df_train_all['title_matches'] = self.df_train_all['combined_info'].map(lambda x: get_matches(x.split('\t')[0], x.split('\t')[1]))
 		self.df_train_all['description_matches'] = self.df_train_all['combined_info'].map(lambda x: get_matches(x.split('\t')[0], x.split('\t')[2]))
 		self.df_train_all = self.df_train_all.drop(['search_term', 'combined_info', 'product_title', 'product_description'], axis = 1)
 		
-		self.df_test_all['search_term'] = self.df_test_all['search_term'].map(lambda x: stem_stop(x))
-		self.df_test_all['combined_info'] = self.df_test_all['search_term'] + "\t" + self.df_test_all['product_title'] + "\t" + self.df_test_all['product_description']
+		self.df_test_all['combined_info'] = self.df_test_all['search_term'].map(lambda x: stem_stop(x)) + "\t" + self.df_test_all['product_title'].map(lambda x: stem_stop(x)) + "\t" + self.df_test_all['product_description'].map(lambda x: stem_stop(x))
 	 	self.df_test_all['query_length'] = self.df_test_all['search_term'].map(lambda x: len(x.split()))
 	 	self.df_test_all['title_length'] = self.df_test_all['product_title'].map(lambda x: len(x.split()))
 	 	self.df_test_all['description_length'] = self.df_test_all['product_description'].map(lambda x: len(x.split()))
@@ -90,8 +62,9 @@ class Regressor:
 		self.df_test_all = self.df_test_all.drop(['search_term', 'combined_info', 'product_title', 'product_description'], axis = 1)
 
 	def build_regressor(self, train_features, train_labels):
-		rf = RandomForestRegressor(n_estimators=15, max_depth=6, random_state=0)
+		rf = RandomForestRegressor(n_estimators=45, max_depth=6, random_state=0)
 		clf = BaggingRegressor(rf, n_estimators=45, max_samples=0.1, random_state=25)
+		param_grid = {'rfr__max_features': [10], 'rfr__max_depth': [20]}
 		clf.fit(train_features, train_labels)
 		return clf
 
