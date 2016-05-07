@@ -3370,6 +3370,39 @@ spell_check_dict={
 '90 degre bracket': '90 degree bracket'
 }
 
+'''
+START_SPELL_CHECK="<span class=\"spell\">Showing results for</span>"
+END_SPELL_CHECK="<br><span class=\"spell_orig\">Search instead for"
+
+HTML_Codes = (
+		("'", '&#39;'),
+		('"', '&quot;'),
+		('>', '&gt;'),
+		('<', '&lt;'),
+		('&', '&amp;'),
+)
+
+def spell_check(s):
+	query = '+'.join(s.split())
+	time.sleep(randint(0,2))
+	request= requests.get("https://www.google.co.uk/search?q=" + query)
+	content = request.text
+	start=content.find(START_SPELL_CHECK)
+
+	if start > -1:
+		start = start + len(START_SPELL_CHECK)
+		end = content.find(END_SPELL_CHECK)
+		search = content[start:end]
+		search = re.sub(r'<[^>]+>', '', search)
+		for code in HTML_Codes:
+			search = search.replace(code[1], code[0])
+		search = search[1:]
+
+	else:
+		search = s
+	return search
+'''
+
 def spell_check(s):
 	if s in spell_check_dict:
 		return spell_check_dict[s]
