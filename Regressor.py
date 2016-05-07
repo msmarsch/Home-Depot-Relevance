@@ -1,107 +1,226 @@
-## Matthew Smarsch and Yacine Manseur
-## NLP Final Project
-## Home Depot Product Search Relevance
+# Matthew Smarsch and Yacine Manseur
+# NLP Final Project
+# Home Depot Search Relevance Predictor
 
+import numpy as np
 import pandas as pd
-import sklearn
+from sklearn.ensemble import RandomForestRegressor
+from sklearn import pipeline, grid_search
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import FeatureUnion
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import mean_squared_error, make_scorer
 from nltk.stem.snowball import SnowballStemmer
-from nltk.corpus import stopwords
-from sklearn.ensemble import RandomForestRegressor, BaggingRegressor
-import requests
 import re
-import time
-from random import randint
+import random
+from sklearn.feature_extraction import text
+import nltk
 import SpellCheck
 
-'''
-START_SPELL_CHECK="<span class=\"spell\">Showing results for</span>"
-END_SPELL_CHECK="<br><span class=\"spell_orig\">Search instead for"
-
-HTML_Codes = (
-		("'", '&#39;'),
-		('"', '&quot;'),
-		('>', '&gt;'),
-		('<', '&lt;'),
-		('&', '&amp;'),
-)
-
-def spell_check(s):
-	query = '+'.join(s.split())
-	time.sleep(randint(0,2))
-	request= requests.get("https://www.google.co.uk/search?q=" + query)
-	content = request.text
-	start=content.find(START_SPELL_CHECK)
-
-	if start > -1:
-		start = start + len(START_SPELL_CHECK)
-		end = content.find(END_SPELL_CHECK)
-		search = content[start:end]
-		search = re.sub(r'<[^>]+>', '', search)
-		for code in HTML_Codes:
-			search = search.replace(code[1], code[0])
-		search = search[1:]
-
-	else:
-		search = s
-	return search
-'''
-
-stop = stopwords.words('english')
+# Set up stopwords and stemmer
+random.seed(2016)
 stemmer = SnowballStemmer('english')
 
-def stem_stop(s):
-	return " ".join([stemmer.stem(word) for word in SpellCheck.spell_check(s).split() if word not in stop]) #if word not in stop | spell_check(s)
+# Read training files into Panda Dataframes
+df_train = pd.read_csv('../Data/train.csv', encoding="ISO-8859-1")
+df_test = pd.read_csv('../Data/test.csv', encoding="ISO-8859-1")
+df_pro_desc = pd.read_csv('../Data/product_descriptions.csv', encoding="ISO-8859-1")
+df_attr = pd.read_csv('../Data/attributes.csv', encoding="ISO-8859-1")
+df_brand = df_attr[df_attr.name == "MFG Brand Name"][["product_uid", "value"]].rename(columns={"value": "brand"})
 
-def get_matches(query, info):
-	return sum(int(info.find(word)>=0) for word in query.split())
+num_train = df_train.shape[0]
+df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
+df_all = pd.merge(df_all, df_pro_desc, how='left', on='product_uid')
+df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
 
-class Regressor:
+strNum = {'zero':0,'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9}
 
-	def __init__(self):
-		self.load_data()
+class RegressionBuilder(BaseEstimator, TransformerMixin):
+    def fit(self, x, y=None):
+        return self
+    def transform(self, hd_searches):
+        d_col_drops=['id','relevance','search_term','product_title','product_description','product_info','attr','brand']
+        hd_searches = hd_searches.drop(d_col_drops,axis=1).values
+        return hd_searches
 
-	def load_data(self):
-		#df_attributes = pd.read_csv('../Data/attributes.csv')
-		df_prod_desc = pd.read_csv('../Data/product_descriptions.csv')
-		df_train = pd.read_csv('../Data/train.csv', encoding="ISO-8859-1")
-		df_test = pd.read_csv('../Data/test.csv', encoding="ISO-8859-1")
-		#df_prod_comb = pd.merge(df_attributes, df_prod_desc, how = 'right', on = 'product_uid')
-		self.df_train_all = pd.merge(df_train, df_prod_desc, how = 'left', on = 'product_uid')
-		self.df_test_all = pd.merge(df_test, df_prod_desc, how = 'left', on = 'product_uid')
+class TextTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, key):
+        self.key = key
+    def fit(self, x, y=None):
+        return self
+    def transform(self, data_dict):
+        return data_dict[self.key].apply(str)
 
-	def preprocess(self):
-		self.df_train_all['search_term'] = self.df_train_all['search_term'].map(lambda x: stem_stop(x))
-		self.df_train_all['combined_info'] = self.df_train_all['search_term'] + "\t" + self.df_train_all['product_title'] + "\t" + self.df_train_all['product_description']
-	 	self.df_train_all['query_length'] = self.df_train_all['search_term'].map(lambda x: len(x.split()))
-	 	self.df_train_all['title_length'] = self.df_train_all['product_title'].map(lambda x: len(x.split()))
-	 	self.df_train_all['description_length'] = self.df_train_all['product_description'].map(lambda x: len(x.split()))
-	 	#self.df_train_all['attribute_length'] = 
-	 	self.df_train_all['title_matches'] = self.df_train_all['combined_info'].map(lambda x: get_matches(x.split('\t')[0], x.split('\t')[1]))
-		self.df_train_all['description_matches'] = self.df_train_all['combined_info'].map(lambda x: get_matches(x.split('\t')[0], x.split('\t')[2]))
-		self.df_train_all = self.df_train_all.drop(['search_term', 'combined_info', 'product_title', 'product_description'], axis = 1)
-		
-		self.df_test_all['search_term'] = self.df_test_all['search_term'].map(lambda x: stem_stop(x))
-		self.df_test_all['combined_info'] = self.df_test_all['search_term'] + "\t" + self.df_test_all['product_title'] + "\t" + self.df_test_all['product_description']
-	 	self.df_test_all['query_length'] = self.df_test_all['search_term'].map(lambda x: len(x.split()))
-	 	self.df_test_all['title_length'] = self.df_test_all['product_title'].map(lambda x: len(x.split()))
-	 	self.df_test_all['description_length'] = self.df_test_all['product_description'].map(lambda x: len(x.split()))
-	 	self.df_test_all['title_matches'] = self.df_test_all['combined_info'].map(lambda x: get_matches(x.split('\t')[0], x.split('\t')[1]))
-		self.df_test_all['description_matches'] = self.df_test_all['combined_info'].map(lambda x: get_matches(x.split('\t')[0], x.split('\t')[2]))
-		self.df_test_all = self.df_test_all.drop(['search_term', 'combined_info', 'product_title', 'product_description'], axis = 1)
+# Function to stem word and replace units, numbers, etc with consistent phrases
+def stem_word(s): 
+    if isinstance(s, str):
+        s = re.sub(r"(\w)\.([A-Z])", r"\1 \2", s)
+        s = s.lower()
+        s = s.replace("  "," ")
+        s = s.replace(",","")
+        s = s.replace("$"," ")
+        s = s.replace("?"," ")
+        s = s.replace("-"," ")
+        s = s.replace("//","/")
+        s = s.replace("..",".")
+        s = s.replace(" / "," ")
+        s = s.replace(" \\ "," ")
+        s = s.replace("."," . ")
+        s = re.sub(r"(^\.|/)", r"", s)
+        s = re.sub(r"(\.|/)$", r"", s)
+        s = re.sub(r"([0-9])([a-z])", r"\1 \2", s)
+        s = re.sub(r"([a-z])([0-9])", r"\1 \2", s)
+        s = s.replace(" x "," xbi ")
+        s = re.sub(r"([a-z])( *)\.( *)([a-z])", r"\1 \4", s)
+        s = re.sub(r"([a-z])( *)/( *)([a-z])", r"\1 \4", s)
+        s = s.replace("*"," xbi ")
+        s = s.replace(" by "," xbi ")
+        s = re.sub(r"([0-9])( *)\.( *)([0-9])", r"\1.\4", s)
+        s = re.sub(r"([0-9]+)( *)(inches|inch|in|')\.?", r"\1in. ", s)
+        s = re.sub(r"([0-9]+)( *)(foot|feet|ft|'')\.?", r"\1ft. ", s)
+        s = re.sub(r"([0-9]+)( *)(pounds|pound|lbs|lb)\.?", r"\1lb. ", s)
+        s = re.sub(r"([0-9]+)( *)(square|sq) ?\.?(feet|foot|ft)\.?", r"\1sq.ft. ", s)
+        s = re.sub(r"([0-9]+)( *)(cubic|cu) ?\.?(feet|foot|ft)\.?", r"\1cu.ft. ", s)
+        s = re.sub(r"([0-9]+)( *)(gallons|gallon|gal)\.?", r"\1gal. ", s)
+        s = re.sub(r"([0-9]+)( *)(ounces|ounce|oz)\.?", r"\1oz. ", s)
+        s = re.sub(r"([0-9]+)( *)(centimeters|cm)\.?", r"\1cm. ", s)
+        s = re.sub(r"([0-9]+)( *)(milimeters|mm)\.?", r"\1mm. ", s)
+        s = s.replace("°"," degrees ")
+        s = re.sub(r"([0-9]+)( *)(degrees|degree)\.?", r"\1deg. ", s)
+        s = s.replace(" v "," volts ")
+        s = re.sub(r"([0-9]+)( *)(volts|volt)\.?", r"\1volt. ", s)
+        s = re.sub(r"([0-9]+)( *)(watts|watt)\.?", r"\1watt. ", s)
+        s = re.sub(r"([0-9]+)( *)(amperes|ampere|amps|amp)\.?", r"\1amp. ", s)
+        s = s.replace("  "," ")
+        s = s.replace(" . "," ")
+        s = (" ").join([str(strNum[z]) if z in strNum else z for z in s.split(" ")])
+        s = (" ").join([stemmer.stem(z) for z in s.split(" ")])
+        
+        s = s.lower()
+        s = s.replace("toliet","toilet")
+        s = s.replace("airconditioner","air conditioner")
+        s = s.replace("vinal","vinyl")
+        s = s.replace("vynal","vinyl")
+        s = s.replace("skill","skil")
+        s = s.replace("snowbl","snow bl")
+        s = s.replace("plexigla","plexi gla")
+        s = s.replace("rustoleum","rust-oleum")
+        s = s.replace("whirpool","whirlpool")
+        s = s.replace("whirlpoolga", "whirlpool ga")
+        s = s.replace("whirlpoolstainless","whirlpool stainless")
+        return s
+    else:
+        return "null"
 
-	def build_regressor(self, train_features, train_labels):
-		rf = RandomForestRegressor(n_estimators=15, max_depth=6, random_state=0)
-		clf = BaggingRegressor(rf, n_estimators=45, max_samples=0.1, random_state=25)
-		clf.fit(train_features, train_labels)
-		return clf
+# Count the number of word matches
+def count_matches(str1, str2):
+    words = str1.split()
+    cnt = 0
+    for word in words:
+        if str2.find(word)>=0:
+            cnt+=1
+    return cnt
 
+# Check if string contains other string
+def check_contains_word(str1, str2, i_):
+    cnt = 0
+    while i_ < len(str2):
+        i_ = str2.find(str1, i_)
+        if i_ == -1:
+            return cnt
+        else:
+            cnt += 1
+            i_ += len(str1)
+    return cnt
 
-if __name__ == '__main__':
-	reg = Regressor()
-	reg.preprocess()
-	test_ids = reg.df_test_all['id']
-	train_labels = reg.df_train_all['relevance'].values
-	train_features = reg.df_train_all.drop(['id', 'relevance'], axis = 1).values
-	test_features = reg.df_test_all.drop(['id'], axis = 1).values
-	clf = reg.build_regressor(train_features, train_labels)
-	pd.DataFrame({"id": test_ids, "relevance": clf.predict(test_features)}).to_csv('submission.csv', index = False)
+def fmean_squared_error(ground_truth, predictions):
+    fmean_squared_error_ = mean_squared_error(ground_truth, predictions)**0.5
+    return fmean_squared_error_
+
+RMSE  = make_scorer(fmean_squared_error, greater_is_better=False)
+
+# Spell check the search terms
+df_all['search_term'] = df_all['search_term'].map(lambda x:SpellCheck.spell_check(x))
+
+# Stem dataframes
+df_all['search_term'] = df_all['search_term'].map(lambda x:stem_word(x))
+df_all['product_title'] = df_all['product_title'].map(lambda x:stem_word(x))
+df_all['product_description'] = df_all['product_description'].map(lambda x:stem_word(x))
+df_all['brand'] = df_all['brand'].map(lambda x:stem_word(x))
+
+# Combine search term, product title, and product description for easy transformations
+df_all['product_info'] = df_all['search_term']+"\t"+df_all['product_title'] +"\t"+df_all['product_description']
+
+# Get lengths
+df_all['len_of_query'] = df_all['search_term'].map(lambda x:len(x.split())).astype(np.int64)
+df_all['len_of_title'] = df_all['product_title'].map(lambda x:len(x.split())).astype(np.int64)
+df_all['len_of_description'] = df_all['product_description'].map(lambda x:len(x.split())).astype(np.int64)
+df_all['len_of_brand'] = df_all['brand'].map(lambda x:len(x.split())).astype(np.int64)
+
+# Check if query is in title or description
+df_all['query_in_title'] = df_all['product_info'].map(lambda x:check_contains_word(x.split('\t')[0],x.split('\t')[1],0))
+df_all['query_in_description'] = df_all['product_info'].map(lambda x:check_contains_word(x.split('\t')[0],x.split('\t')[2],0))
+
+# Check if last word of query is in title or description
+df_all['query_last_word_in_title'] = df_all['product_info'].map(lambda x:count_matches(x.split('\t')[0].split(" ")[-1],x.split('\t')[1]))
+df_all['query_last_word_in_description'] = df_all['product_info'].map(lambda x:count_matches(x.split('\t')[0].split(" ")[-1],x.split('\t')[2]))
+
+# Count number of word matches
+df_all['word_in_title'] = df_all['product_info'].map(lambda x:count_matches(x.split('\t')[0],x.split('\t')[1]))
+df_all['word_in_description'] = df_all['product_info'].map(lambda x:count_matches(x.split('\t')[0],x.split('\t')[2]))
+
+# Calculate ratios
+df_all['ratio_title'] = df_all['word_in_title']/df_all['len_of_query']
+df_all['ratio_description'] = df_all['word_in_description']/df_all['len_of_query']
+df_all['attr'] = df_all['search_term']+"\t"+df_all['brand']
+df_all['word_in_brand'] = df_all['attr'].map(lambda x:count_matches(x.split('\t')[0],x.split('\t')[1]))
+df_all['ratio_brand'] = df_all['word_in_brand']/df_all['len_of_brand']
+df_brand = pd.unique(df_all.brand.ravel())
+
+d={}
+i = 1000
+for s in df_brand:
+    d[s]=i
+    i+=3
+df_all['brand_feature'] = df_all['brand'].map(lambda x:d[x])
+df_all['search_term_feature'] = df_all['search_term'].map(lambda x:len(x))
+
+df_train = df_all.iloc[:num_train]
+df_test = df_all.iloc[num_train:]
+id_test = df_test['id']
+y_train = df_train['relevance'].values
+X_train =df_train[:]
+X_test = df_test[:]
+
+rfr = RandomForestRegressor(n_estimators = 500, n_jobs = -1, random_state = 2016, verbose = 1)
+tfidf = TfidfVectorizer(ngram_range=(1, 1), stop_words='english')
+tsvd = TruncatedSVD(n_components=10, random_state = 2016)
+clf = pipeline.Pipeline([
+        ('union', FeatureUnion(
+                    transformer_list = [
+                        ('cst',  RegressionBuilder()),  
+                        ('txt1', pipeline.Pipeline([('s1', TextTransformer(key='search_term')), ('tfidf1', tfidf), ('tsvd1', tsvd)])),
+                        ('txt2', pipeline.Pipeline([('s2', TextTransformer(key='product_title')), ('tfidf2', tfidf), ('tsvd2', tsvd)])),
+                        ('txt3', pipeline.Pipeline([('s3', TextTransformer(key='product_description')), ('tfidf3', tfidf), ('tsvd3', tsvd)])),
+                        ('txt4', pipeline.Pipeline([('s4', TextTransformer(key='brand')), ('tfidf4', tfidf), ('tsvd4', tsvd)]))
+                        ],
+                    transformer_weights = {
+                        'cst': 1.0,
+                        'txt1': 0.5,
+                        'txt2': 0.25,
+                        'txt3': 0.0,
+                        'txt4': 0.5
+                        },
+                n_jobs = -1
+                )),
+        ('rfr', rfr)])
+param_grid = {'rfr__max_features': [10], 'rfr__max_depth': [20]}
+model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = -1, cv = 2, verbose = 20, scoring=RMSE)
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submissiontest.csv',index=False)
+
+print("Best Score:")
+print(-model.best_score_)
